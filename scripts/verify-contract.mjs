@@ -1,0 +1,18 @@
+import assert from 'node:assert/strict';
+import { normalizePlan } from '../director.mjs';
+import { checkProgram, dimensions } from '../video-contract.js';
+const code = "const top=height*.2;ctx.textBaseline='top';ctx.fillStyle='#ffe2cc';ctx.fillRect(0,0,width,height);ctx.fillText('original',t*100,top);";
+const raw = {status:'plan',title:'原创',durationSec:6,aspectRatio:'21:9',loop:false,style:'自选媒介',direction:'自由动作',assetUsage:[],scenes:[{id:'repeat',durationSec:3,headline:'1',body:''},{id:'repeat',durationSec:3,headline:'2',body:''}],renderCode:code};
+const plan = normalizePlan(raw,'想法',0);
+assert.equal(plan.renderer,'canvas-program'); assert.equal(plan.renderCode,code);
+assert.notEqual(plan.scenes[0].id,plan.scenes[1].id);
+assert.deepEqual(dimensions('21:9'),{width:1680,height:720});
+assert.deepEqual(dimensions('9:21'),{width:720,height:1680});
+assert.throws(()=>dimensions('30:1'));
+assert.throws(()=>normalizePlan({...raw,renderCode:undefined},'想法',0));
+assert.throws(()=>normalizePlan({...raw,durationSec:10},'想法',0));
+assert.throws(()=>normalizePlan({...raw,assetUsage:[{index:0,role:'content'}]},'想法',0));
+assert.equal(normalizePlan({status:'clarification',question:'图片用途？'},'想法',1).question,'图片用途？');
+checkProgram("class Shape{constructor(x){this.x=x;}draw(){ctx.fillRect(this.x,0,30,30);}}new Shape(t*50).draw();");
+for(const forbidden of ['fetch("https://example.org")','new Worker("x")','while(true){}']) assert.throws(()=>checkProgram(forbidden+';'.repeat(100)));
+console.log('Contract checks passed: free programs, ratios, metadata, attachment references and capability guards.');

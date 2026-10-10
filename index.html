@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Video Flow · 想法变成视频</title>
+  <link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <main class="shell">
+    <header class="topbar">
+      <a class="brand" href="/"><span class="brand-mark">V</span><span>video flow</span></a>
+      <div class="top-meta"><span class="mode-pill" id="mode-pill">检查规划器…</span><span class="local-note" id="local-note">检查图片处理方式…</span></div>
+    </header>
+
+    <section class="intro">
+      <div class="eyebrow"><span class="sparkle">✳</span> FROM IDEA TO MOTION</div>
+      <h1>把一个想法，<span>变成一段视频。</span></h1>
+      <p>写下你想表达的内容，可以附上图片。AI 会为整条视频创作画面与运动，自行决定造型、构图和镜头；看不懂图片的用途时，它会先问你。</p>
+    </section>
+
+    <div class="history-bar"><label for="history-select">已保存作品</label><select id="history-select"><option value="">打开已生成的作品…</option></select></div>
+    <section class="panel job-panel" aria-label="创作进度"><div class="job-controls"><label for="job-select">创作进度</label><select id="job-select"><option value="">没有进行中的创作</option></select><button id="resume-job" class="secondary-button" disabled>继续创作</button></div><p id="job-status" role="status">每一步自动保存，刷新页面可恢复进度。</p></section>
+    <section class="workspace">
+      <div class="input-panel panel">
+        <div class="panel-heading"><div><span class="step">01</span><h2>描述你的想法</h2></div><span class="optional">图片可选</span></div>
+        <label class="sr-only" for="idea">视频想法</label>
+        <textarea id="idea" maxlength="30000" placeholder="比如：做一段有未来感的短视频，介绍一款帮助人专注的计时器……"></textarea>
+        <div class="input-bottom"><span id="char-count">0 / 30000</span><span>你可以只写想法，细节交给 AI</span></div>
+        <div class="upload-zone" id="upload-zone">
+          <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
+          <button class="upload-button" id="upload-button" type="button"><span class="upload-icon">＋</span><span><strong>添加图片</strong><small>PNG、JPG、WebP，每张最大 6 MB</small></span></button>
+          <div id="image-list" class="image-list"></div>
+        </div>
+        <details class="narration-panel"><summary>长视频解说与字幕（可选）</summary><label for="storyboard-input">解说时间轴 JSON</label><input id="storyboard-input" type="file" accept="application/json,.json"><p id="storyboard-info">导入分段时间、解说文案与画面要求，AI 按节奏创作。</p><button id="clear-storyboard" class="secondary-button" type="button">移除时间轴</button><label for="audio-input">配音文件（生成画面后添加）</label><input id="audio-input" type="file" accept="audio/*"><audio id="audio-preview" preload="metadata" hidden></audio><p id="audio-info">可添加 WAV、MP3 或 M4A，导出时与画面同步合成。</p></details>
+        <div id="clarification" class="clarification" hidden>
+          <div class="clarify-label"><span class="question-icon">?</span><span>需要你补充一下</span></div>
+          <p id="question-text"></p>
+          <label class="sr-only" for="clarification-answer">回答</label>
+          <input id="clarification-answer" type="text" placeholder="告诉 AI 这些图片应该怎么用…">
+        </div>
+        <div class="form-actions"><span class="privacy"><span class="lock">⌑</span> AI 模式会将图片发送给规划服务</span><button id="create-button" class="primary-button" type="button"><span>创作视频</span><span class="button-arrow">↗</span></button></div>
+        <div id="error-box" class="error-box" hidden></div>
+      </div>
+
+      <div class="result-column">
+        <div class="panel result-panel">
+          <div class="panel-heading"><div><span class="step">02</span><h2>画面与导演设计</h2></div><span id="plan-state" class="state-label">等待输入</span></div>
+          <div id="empty-state" class="empty-state"><div class="empty-illustration"><span class="empty-orbit orbit-one"></span><span class="empty-orbit orbit-two"></span><span class="empty-core">▶</span></div><strong>想法在这里变成画面</strong><span>提交描述后，AI 会编写这条视频独有的画面与动画</span></div>
+          <div id="plan-content" hidden>
+            <div class="plan-overview"><h3 id="plan-title"></h3><div id="plan-meta" class="plan-meta"></div></div>
+            <p id="plan-direction" class="plan-direction"></p><div id="scene-list" class="scene-list"></div>
+            <div class="validation-box" id="validation-box"><div class="validation-heading"><span class="check-badge">✓</span><strong>画面执行校验</strong><span id="validation-status">等待运行</span></div><div id="validation-items" class="validation-items"></div><button id="validate-button" class="secondary-button" type="button">运行验证</button></div>
+            <div class="refine-box"><label for="refinement">调整这条作品</label><textarea id="refinement" maxlength="1800" placeholder="描述你想调整的画面、动作或节奏…"></textarea><button id="refine-button" class="secondary-button" disabled>按反馈修改</button></div><details class="dsl-details"><summary>查看 AI 编写的完整画面程序</summary><pre id="dsl-output"></pre></details>
+          </div>
+        </div>
+        <div class="panel preview-panel">
+          <div class="panel-heading"><div><span class="step">03</span><h2>预览与导出</h2></div><span id="render-state" class="state-label">等待计划</span></div>
+          <div class="preview-area"><div id="canvas-wrap" class="canvas-wrap"><canvas id="video-canvas" width="720" height="1280"></canvas><div id="canvas-empty" class="canvas-empty"><span>▶</span><small>画面预览</small></div></div></div>
+          <div class="timeline-bar"><input id="timeline" type="range" min="0" max="12" step="0.01" value="0" disabled aria-label="视频时间"><span id="time-label">0.0 秒</span></div><div class="preview-controls"><button id="play-button" class="play-button" disabled><span>▶</span><span>预览动画</span></button><button id="export-button" class="export-button" disabled><span>↓</span><span>导出视频</span></button></div>
+          <div id="export-result" hidden><video id="exported-video" controls playsinline preload="metadata"></video><p id="export-info"></p><a id="download-link" class="secondary-button">下载 MP4</a></div><div class="export-note">MP4 · 30 fps · 短边 720px · 支持逐帧导出</div>
+        </div>
+      </div>
+    </section>
+
+    <details id="run-logs" class="panel run-logs" open><summary>运行日志 <span id="log-status">连接中…</span></summary><div class="log-tools"><span>生成、重试、验证与导出过程</span><a href="/api/logs/download" download>下载日志</a></div><pre id="log-output" aria-label="运行日志内容">等待运行记录…</pre></details>
+
+    <footer><span>VIDEO FLOW MVP</span><span>理解 → 规划 → 校验 → 渲染</span></footer>
+  </main>
+  <script type="module" src="/app.js"></script>
+</body>
+</html>

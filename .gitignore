@@ -1,0 +1,22 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+
+# Dependencies and generated build output
+node_modules/
+/dist/
+/coverage/
+/.cache/
+
+# Generated videos, audio, frames, job records, logs, and local backups
+/artifacts/
+*.log
+*.tmp
+
+# OS and editor temporary files
+.DS_Store
+*.swp
+*.swo
+__pycache__/
+*.pyc

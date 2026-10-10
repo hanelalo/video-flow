@@ -1,0 +1,57 @@
+<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; worker-src blob:; connect-src 'none'; img-src data: blob:; style-src 'none'; base-uri 'none'; form-action 'none'"></head><body><script>
+'use strict';
+let worker, token, pendingTimer, activeId;
+function workerMain() {
+  let canvas, ctx, render, assets = [], duration;
+  const hash = n => { const x = Math.sin(Number(n) * 127.1 + 311.7) * 43758.5453123; return x - Math.floor(x); };
+  const utils = { clamp: (x, a = 0, b = 1) => Math.max(a, Math.min(b, x)), lerp: (a, b, p) => a + (b - a) * p, smooth: p => { p = Math.max(0, Math.min(1, p)); return p * p * (3 - 2 * p); }, easeOut: p => 1 - Math.pow(1 - Math.max(0, Math.min(1, p)), 3), random: hash, duration: 0 };
+  onmessage = async event => {
+    const m = event.data;
+    try {
+      if (m.type === 'init') {
+        canvas = new OffscreenCanvas(m.width, m.height); ctx = canvas.getContext('2d'); duration = m.duration; utils.duration = duration;
+        for (const url of m.images) {
+          const [header, payload] = url.split(','); const bytes = Uint8Array.from(atob(payload), c => c.charCodeAt(0));
+          assets.push(await createImageBitmap(new Blob([bytes], { type: header.match(/data:([^;]+)/)[1] })));
+        }
+        const clean = m.code.replace(/^\s*(?:(?:\/\*[\s\S]*?\*\/|\/\/[^\n]*)(?:\s*))*\s*/, '');
+        const namedEntry = /^(?:async\s+)?function\s+render\s*\(/.test(clean);
+        const body = m.code + (namedEntry ? '\n;return render(ctx,t,width,height,assets,utils);' : '');
+        render = new Function('ctx', 't', 'width', 'height', 'assets', 'utils', '"use strict";\n' + body);
+        postMessage({ type: 'ready', id: m.id, entrypoint: namedEntry ? 'render-function' : 'function-body' });
+      } else if (m.type === 'render') {
+        canvas.width = canvas.width; ctx = canvas.getContext('2d');
+        let seed = 1; Math.random = () => hash(seed++);
+        const started = performance.now();
+        const time = Math.max(0, Math.min(duration, m.time));
+        let result = render(ctx, time, canvas.width, canvas.height, assets, utils);
+        if (typeof result === 'function') result = result(ctx, time, canvas.width, canvas.height, assets, utils);
+        if (result && typeof result.then === 'function') throw new Error('画面程序必须同步绘制。');
+        const renderMs = performance.now() - started, bitmap = canvas.transferToImageBitmap();
+        postMessage({ type: 'frame', id: m.id, bitmap, renderMs }, [bitmap]);
+      }
+    } catch (error) { postMessage({ type: 'error', id: m.id, moduleId: error.moduleId, message: error.message, stack: String(error.stack || '').slice(0, 1800) }); }
+  };
+}
+function fail(id, message) { worker?.terminate(); clearTimeout(pendingTimer); parent.postMessage({ type: 'error', token, id, message }, '*'); }
+addEventListener('message', event => {
+  if (event.source !== parent) return;
+  const m = event.data;
+  if (m.type === 'init') {
+    token = m.token; worker?.terminate();
+    try {
+      const url = URL.createObjectURL(new Blob(['(' + workerMain.toString() + ')()'], { type: 'text/javascript' }));
+      worker = new Worker(url); URL.revokeObjectURL(url);
+      worker.onmessage = event => {
+        clearTimeout(pendingTimer); const response = { ...event.data, token };
+        parent.postMessage(response, '*', response.bitmap ? [response.bitmap] : []);
+      };
+      worker.onerror = e => { e.preventDefault(); fail(activeId, e.message || '隔离绘图线程启动失败。'); };
+    } catch (e) { fail(m.id, e.message); return; }
+  } else if (m.token !== token) return;
+  if (m.type === 'dispose') { worker?.terminate(); clearTimeout(pendingTimer); return; }
+  activeId = m.id; clearTimeout(pendingTimer);
+  pendingTimer = setTimeout(() => fail(m.id, '画面程序执行超时，绘图线程已终止。请减少每帧计算或检查循环。'), m.type === 'init' ? 10000 : 3000);
+  worker.postMessage(m);
+});
+</script></body></html>
