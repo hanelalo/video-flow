@@ -1,27 +1,16 @@
-import { dimensions, checkProgram, MAX_DURATION_SEC, MAX_SCENES } from './video-contract.js';
+import { checkProgram } from './video-contract.js';
 import { buildMultiTurn } from './multi-turn-director.mjs';
+import {normalizePlanMetadata} from './plan-metadata.mjs';
 
 const textValue = (x, fallback = '') => typeof x === 'string' ? x.trim() || fallback : fallback;
 
 export function normalizePlan(raw, prompt, imageCount) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('模型必须返回作品对象。');
   if (raw.status === 'clarification') return { status: 'clarification', question: textValue(raw.question, '这些图片要直接出现在视频中，还是只作为视觉参考？') };
-  const durationSec = Number(raw.durationSec);
-  if (!Number.isFinite(durationSec) || durationSec < 3 || durationSec > MAX_DURATION_SEC) throw new Error(`模型返回的视频时长超出 3–${MAX_DURATION_SEC} 秒。`);
-  const aspectRatio = textValue(raw.aspectRatio, '9:16'); dimensions(aspectRatio);
+  const metadata = normalizePlanMetadata(raw, prompt, imageCount);
   const renderCode = textValue(raw.renderCode);
   checkProgram(renderCode);
-  if (!Array.isArray(raw.scenes) || raw.scenes.length < 1 || raw.scenes.length > MAX_SCENES) throw new Error(`请提供 1–${MAX_SCENES} 段时间说明。`);
-  const ids = new Set();
-  const scenes = raw.scenes.map((s, i) => {
-    let id = textValue(s.id, `shot-${i + 1}`); if (ids.has(id)) id = `shot-${i + 1}`; while (ids.has(id)) id += '-x'; ids.add(id);
-    const d = Number(s.durationSec); if (!Number.isFinite(d) || d <= 0) throw new Error(`第 ${i + 1} 镜时长无效。`);
-    return { id, durationSec: d, headline: textValue(s.headline, `镜头 ${i + 1}`), body: textValue(s.body) };
-  });
-  if (Math.abs(scenes.reduce((sum, s) => sum + s.durationSec, 0) - durationSec) > .05) throw new Error('分镜时长与程序总时长不一致，请同时修正元数据和动画时间。');
-  const assetUsage = Array.isArray(raw.assetUsage) ? raw.assetUsage : [];
-  if (assetUsage.some(a => !Number.isInteger(a.index) || a.index < 0 || a.index >= imageCount || !['content', 'reference', 'unused'].includes(a.role))) throw new Error('图片用途引用了不存在的附件。');
-  return { version: '1.0', renderer: 'canvas-program', status: 'plan', question: '', title: textValue(raw.title, prompt.slice(0, 35)), durationSec, aspectRatio, loop: raw.loop === true, style: textValue(raw.style), direction: textValue(raw.direction), assetUsage, scenes, renderCode };
+  return {version: '1.0', renderer: 'canvas-program', ...metadata, renderCode};
 }
 
 function demoPlan(prompt, images, answer) {

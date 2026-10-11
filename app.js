@@ -7,15 +7,21 @@ const canvas = $('video-canvas'), renderer = new ProgramRenderer(canvas);
 const state = { plan: null, images: [], busy: false, playing: false, valid: false, time: 0, generationId: '', token: 0, chain: Promise.resolve(), health: null, runId: '', jobs: [], storyboard: null, audio: null };
 const pendingKey = 'video-flow.pending-job';
 const timeText = seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds % 60)).padStart(2, '0')}`;
+const isProject = () => state.plan?.renderer === 'remotion-project';
+function engineInfo() {
+  $('engine-info').textContent = $('engine-select').value === 'canvas' ? 'AI 编写画布程序，可在浏览器中预览和导出。' : !state.health?.pi || !state.health?.sandbox ? '自动开发需要本机 pi 和可用的隔离执行环境。' : '自动设计、开发、检查和导出，过程持续保存。';
+}
 const phases = { design: '正在设计整条视频', 'repair-selection': '正在定位修改范围', modules: '正在编写画面', module: '正在编写画面', split: '正在细化画面', assemble: '正在合成整条视频', complete: '画面已生成' };
 const log = (event, message, fields = {}) => report(event, message, { generationId: state.generationId, ...fields }, state.runId);
+Object.assign(phases, {environment: '正在准备独立视频工程', agent: '正在开发视频工程', acceptance: '正在检查实际画面', 'project-export': '正在生成完整视频'});
 function error(message = '') { $('error-box').hidden = !message; $('error-box').textContent = message; }
 function controls() {
   $('create-button').disabled = state.busy; $('idea').disabled = state.busy; $('clarification-answer').disabled = state.busy;
+  $('engine-select').disabled = state.busy;
   $('play-button').disabled = state.busy || !state.valid;
   $('export-button').disabled = state.busy || !state.valid || !state.health?.ffmpeg;
   $('validate-button').disabled = state.busy || !state.plan; $('refine-button').disabled = state.busy || !state.plan; $('refinement').disabled = state.busy;
-  $('timeline').disabled = state.busy || !state.plan;
+  $('timeline').disabled = state.busy || !state.plan || isProject();
   $('history-select').disabled = state.busy;
   $('image-input').disabled = state.busy; $('upload-button').disabled = state.busy;
   $('job-select').disabled = state.busy;
@@ -24,6 +30,7 @@ function controls() {
   const selected = state.jobs.find(j => j.jobId === $('job-select').value);
   $('resume-job').disabled = state.busy || !selected;
   $('resume-job').textContent = selected?.status === 'running' ? '查看进度' : '继续创作';
+  $('cancel-job').disabled = !(state.activeJobId || selected?.status === 'running');
   $('play-button').lastElementChild.textContent = state.playing ? '暂停' : '预览动画';
 }
 async function api(path, body) {
@@ -32,8 +39,11 @@ async function api(path, body) {
 }
 function showJob(task) {
   const progress = task.progress || {}, text = phases[task.phase] || '正在创作';
-  const detail = progress.total ? ` · 已完成 ${progress.completed}/${progress.total}` : '';
-  $('job-status').textContent = task.status === 'failed' || task.status === 'interrupted' ? `${task.error}（已保存进度）` : `${text}${detail}`;
+  const detail = progress.total ? ` · 已完成 ${progress.completed}/${progress.total}` : progress.round ? ` · 第 ${progress.round} 轮` : '';
+  $('job-status').textContent = ['failed','interrupted','cancelled'].includes(task.status) ? `${task.error}（已保存进度）` : `${text}${detail}`;
+  if (task.status === 'running') state.activeJobId = task.jobId;
+  else if (state.activeJobId === task.jobId) state.activeJobId = '';
+  $('cancel-job').disabled = task.status !== 'running';
   if (task.status === 'running') { $('plan-state').textContent = `${text}${detail}`; $('render-state').textContent = '创作继续进行，刷新后可恢复查看'; }
 }
 async function refreshJobs(preferred = '') {
@@ -48,23 +58,26 @@ async function waitForJob(task) {
   localStorage.setItem(pendingKey, task.jobId); state.runId = task.runId || state.runId;
   for (;;) {
     showJob(task);
-    if (task.status === 'complete') { localStorage.removeItem(pendingKey); return task.result; }
-    if (task.status === 'failed' || task.status === 'interrupted') { localStorage.removeItem(pendingKey); throw new Error(task.error || '创作中断，已保存进度。'); }
+    if (task.status === 'complete') { state.activeJobId = ''; localStorage.removeItem(pendingKey); return task.result; }
+    if (['failed','interrupted','cancelled'].includes(task.status)) { state.activeJobId = ''; localStorage.removeItem(pendingKey); throw new Error(task.error || '创作中断，已保存进度。'); }
     await new Promise(resolve => setTimeout(resolve, 1500));
     task = await api(`/api/jobs/${task.jobId}`);
   }
 }
-async function createPlan(body) { const task = await api('/api/plan', { ...body, storyboard: state.storyboard }); return task.jobId ? waitForJob(task) : task; }
+async function createPlan(body) { const engine = body.repair ? (isProject() ? 'pi' : 'canvas') : $('engine-select').value; const task = await api('/api/plan', { ...body, engine, storyboard: state.storyboard }); return task.jobId ? waitForJob(task) : task; }
 async function attachJob(id, resume = false) {
   const input = await api(`/api/jobs/${id}/input`);
+  $('engine-select').value = input.engine || 'canvas';
+  engineInfo();
   $('idea').value = input.prompt; $('char-count').textContent = `${input.prompt.length} / 30000`; $('clarification-answer').value = input.clarificationAnswer;
   state.images = input.images; state.storyboard = input.storyboard || null; showStoryboard(); showImages(); state.valid = false;
   const task = await api(`/api/jobs/${id}${resume ? '/resume' : ''}`, resume ? {} : undefined);
   const result = await waitForJob(task);
   if (await acceptResult(result)) { $('clarification').hidden = true; await validateAndRepair(); }
 }
-async function stop() { $('audio-preview').pause(); state.playing = false; state.token++; controls(); await state.chain.catch(() => {}); }
+async function stop() { $('audio-preview').pause(); $('project-preview').pause(); state.playing = false; state.token++; controls(); await state.chain.catch(() => {}); }
 function drawAt(t) {
+  if (isProject()) { $('project-preview').currentTime = t; state.time = t; $('time-label').textContent = `${timeText(t)} / ${timeText(state.plan.durationSec)}`; return Promise.resolve(0); }
   state.chain = state.chain.catch(() => {}).then(async () => {
     let ms;
     try { ms = await renderer.render(t); } catch (e) { e.phase = 'drawing'; e.renderTime = t; e.message = `在 ${t.toFixed(3)} 秒绘制失败：${e.message}`; throw e; }
@@ -85,6 +98,18 @@ function fingerprint() {
   return { hash: hash >>> 0, visible, luma: luma / (pixels.length / 4) };
 }
 async function validate() {
+  if (isProject()) {
+    const report = await api(`/api/generations/${state.generationId}/acceptance`);
+    if (!report.ok || report.sourceHash !== state.plan.sourceHash) throw new Error('工程尚未通过当前版本验收。');
+    $('validation-items').replaceChildren(); $('validate-button').textContent = '查看验收记录';
+    validationItem('独立工程已完成 TypeScript 检查和构建');
+    validationItem(`${report.frames.length} 个实际渲染帧通过文字边界检查`);
+    if (report.motion && report.deterministic) validationItem('代表帧随时间变化，同一帧重复渲染结果一致');
+    validationItem('完整 MP4 已通过编码、尺寸、帧数和时长检查');
+    validationItem(report.visualReview === 'not-configured' ? '当前模型未启用图像输入，尚无模型视觉自审' : 'pi 已配置图像输入；画面判断仍需结合实际成片', 'note');
+    $('validation-status').textContent = '工程验收通过'; state.valid = true; $('render-state').textContent = '视频已自动生成'; return;
+  }
+  $('validate-button').textContent = '运行验证';
   const started = performance.now(); log('validation.start', '开始隔离执行与时间采样验证', { phase: 'validation' });
   state.valid = false; controls(); $('validation-items').replaceChildren(); $('validation-status').textContent = '执行画面程序…';
   try {
@@ -122,12 +147,16 @@ async function validate() {
 }
 function displayPlan() {
   const p = state.plan, size = dimensions(p.aspectRatio, p.durationSec > 120 ? 1080 : 720); canvas.width = size.width; canvas.height = size.height;
+  $('canvas-wrap').hidden = isProject(); $('project-preview').hidden = !isProject(); $('exported-video').hidden = isProject();
+  $('project-download').hidden = !isProject();
+  if (isProject()) { renderer.disposeFrame(); $('project-download').href = `/api/generations/${state.generationId}/project`; $('project-download').download = `${p.title}.tar`; }
+  else { $('project-preview').removeAttribute('src'); }
   $('canvas-wrap').style.aspectRatio = `${size.width} / ${size.height}`; $('canvas-wrap').style.maxWidth = size.width > size.height ? '100%' : '300px';
   document.querySelector('.export-note').textContent = `MP4 · 30 fps · ${size.width}×${size.height} · 支持逐帧导出`;
   $('canvas-empty').hidden = true; $('empty-state').hidden = true; $('plan-content').hidden = false;
   $('plan-title').textContent = p.title; $('plan-meta').textContent = `${timeText(p.durationSec)} · ${p.aspectRatio} · ${p.scenes.length} 段 · ${p.loop ? '循环' : '完整短片'}`;
   $('plan-direction').textContent = `${p.style}\n${p.direction}`; $('dsl-output').textContent = JSON.stringify(p, null, 2);
-  $('plan-state').textContent = p.modules ? `原创画面 · ${p.modules.length} 个模块` : '原创画面程序'; $('timeline').max = p.durationSec;
+  $('plan-state').textContent = isProject() ? '独立视频工程 · 自动完成' : p.modules ? `原创画面 · ${p.modules.length} 个模块` : '原创画面程序'; $('timeline').max = p.durationSec;
   $('scene-list').replaceChildren(); let start = 0;
   p.scenes.forEach((scene, i) => {
     const card = document.createElement('button'); card.type = 'button'; card.className = 'scene-card';
@@ -147,7 +176,13 @@ async function refreshHistory() {
 }
 async function acceptResult(result) {
   if (result.plan.status === 'clarification') { $('clarification').hidden = false; $('question-text').textContent = result.plan.question; $('plan-state').textContent = '等待图片用途'; return false; }
-  state.plan = result.plan; state.storyboard = result.plan.storyboard || null; showStoryboard(); state.generationId = result.generationId; state.valid = false; state.audio = null; $('audio-preview').removeAttribute('src'); displayPlan(); const saved = await api(`/api/generations/${state.generationId}`); $('audio-info').textContent = saved.audioAvailable ? '已保存配音，预览与导出会同步播放。' : '这条作品暂无配音，可上传同等时长的音频。'; if (saved.audioAvailable) { state.audio = true; $('audio-preview').src = `/api/generations/${state.generationId}/audio`; } await refreshHistory(); return true;
+  state.plan = result.plan; state.storyboard = result.plan.storyboard || null; showStoryboard(); state.generationId = result.generationId; state.valid = false; state.audio = null; $('audio-preview').removeAttribute('src'); displayPlan(); const saved = await api(`/api/generations/${state.generationId}`); $('audio-info').textContent = saved.audioAvailable ? '已保存配音，预览与导出会同步播放。' : '这条作品暂无配音，可上传同等时长的音频。'; if (saved.audioAvailable) { state.audio = true; $('audio-preview').src = `/api/generations/${state.generationId}/audio`; } if (isProject() && saved.videoAvailable) showProjectVideo(saved.audioAvailable); await refreshHistory(); return true;
+}
+function showProjectVideo(audio = false) {
+  const url = `/api/generations/${state.generationId}/video`, p = state.plan, size = dimensions(p.aspectRatio,p.durationSec>120?1080:720);
+  $('project-preview').src = `${url}?v=${Date.now()}`; $('project-preview').loop = p.loop;
+  $('download-link').href = url; $('download-link').download = `${p.title}.mp4`; $('export-result').hidden = false;
+  $('export-info').textContent = `H.264 · ${size.width}×${size.height} · 30 fps · ${timeText(p.durationSec)}${audio?' · 配音':''}`;
 }
 async function validateAndRepair(maxRepairs = 2) {
   for (let attempt = 0; ; attempt++) {
@@ -183,14 +218,16 @@ $('history-select').onchange = () => job(async () => {
   const id = $('history-select').value; if (!id) return;
   const r = await api(`/api/generations/${id}`); $('idea').value = r.prompt; $('char-count').textContent = `${r.prompt.length} / 30000`; $('clarification-answer').value = r.clarificationAnswer; state.images = r.images; state.audio = null; $('audio-info').textContent = r.audioAvailable ? '已保存配音，导出时会同步合成。' : '这条作品暂无配音。'; showImages();
   await acceptResult({ plan: r.plan, generationId: r.id }); await validateAndRepair(0);
-  if (r.videoAvailable) { $('exported-video').src = `/api/generations/${id}/video`; $('exported-video').loop = r.plan.loop; $('download-link').href = `/api/generations/${id}/video`; $('download-link').download = `${r.plan.title}.mp4`; $('export-result').hidden = false; $('export-info').textContent = '已保存的 MP4'; }
+  if (r.videoAvailable && !isProject()) { $('exported-video').src = `/api/generations/${id}/video`; $('exported-video').loop = r.plan.loop; $('download-link').href = `/api/generations/${id}/video`; $('download-link').download = `${r.plan.title}.mp4`; $('export-result').hidden = false; $('export-info').textContent = '已保存的 MP4'; }
 }, 'restore');
 $('job-select').onchange = () => { const task = state.jobs.find(j => j.jobId === $('job-select').value); if (task) showJob(task); controls(); };
 $('resume-job').onclick = () => job(async () => {
   const task = state.jobs.find(j => j.jobId === $('job-select').value); if (!task) return;
   await attachJob(task.jobId, task.status !== 'running');
 }, 'resume');
+$('cancel-job').onclick = async () => { const id = state.activeJobId || $('job-select').value; if (!id) return; try { $('cancel-job').disabled = true; showJob(await api(`/api/jobs/${id}/cancel`, {})); } catch(e) { error(e.message); } };
 $('play-button').onclick = async () => {
+  if (isProject()) { const video = $('project-preview'); if (video.paused) await video.play().catch(e => error(e.message)); else video.pause(); return; }
   if (state.playing) { await stop(); return; } if (!state.valid || state.busy) return;
   state.playing = true; controls(); if ($('audio-preview').src && state.audio) { $('audio-preview').currentTime = state.time >= state.plan.durationSec ? 0 : state.time; $('audio-preview').play().catch(() => {}); } const token = ++state.token, offset = state.time >= state.plan.durationSec ? 0 : state.time, started = performance.now();
   async function tick() {
@@ -220,6 +257,7 @@ $('audio-input').onchange = () => job(async () => {
   state.audio = true; $('audio-preview').src = `/api/generations/${state.generationId}/audio?v=${Date.now()}`;
   $('audio-info').textContent = `配音已保存 · ${info.durationSec.toFixed(1)} 秒 · 导出时同步合成`;
   $('export-result').hidden = true; $('audio-input').value = '';
+  if (isProject()) { await api(`/api/generations/${state.generationId}/export`, {}); showProjectVideo(true); }
 }, 'audio');
 function showImages() {
   $('image-list').replaceChildren(); state.images.forEach((image, i) => {
@@ -280,6 +318,7 @@ async function recordFallback() {
   } finally { if (recorder.state !== 'inactive') recorder.stop(); stream.getTracks().forEach(t => t.stop()); }
 }
 $('export-button').onclick = () => job(async () => {
+  if (isProject()) { const info = await api(`/api/generations/${state.generationId}/export`, {}); showProjectVideo(info.audio); $('render-state').textContent = 'MP4 已生成'; return; }
   let encoded;
   for (let attempt = 0; attempt <= 2; attempt++) {
     const config = await codecConfig(); $('render-state').textContent = config ? '准备逐帧导出' : '准备兼容录制';
@@ -307,7 +346,8 @@ $('export-button').onclick = () => job(async () => {
 }, 'export');
 (async () => {
   try {
-    state.health = await api('/api/health'); $('mode-pill').textContent = state.health.mode === 'ai' ? `${state.health.model} · 多轮创作` : '演示模式 · 固定样例'; $('local-note').textContent = state.health.mode === 'ai' ? '画面与运动由 AI 编写' : '配置模型后启用 AI 创作';
+    state.health = await api('/api/health'); $('engine-select').value = state.health.defaultEngine || 'pi'; $('mode-pill').textContent = state.health.mode === 'ai' ? `${state.health.model} · ${state.health.pi ? 'pi 已就绪' : '多轮创作'}` : '演示模式 · 固定样例'; $('local-note').textContent = state.health.mode === 'ai' ? '画面与运动由 AI 编写' : '配置模型后启用 AI 创作';
+    engineInfo();
     await refreshHistory(); await refreshJobs();
     const pending = localStorage.getItem(pendingKey);
     if (pending && /^[a-f0-9]{16}$/.test(pending)) {
@@ -317,3 +357,7 @@ $('export-button').onclick = () => job(async () => {
     }
   } catch (e) { error(e.message); } controls();
 })();
+$('project-preview').addEventListener('play', () => { state.playing = true; controls(); });
+$('engine-select').addEventListener('change', engineInfo);
+$('project-preview').addEventListener('pause', () => { state.playing = false; controls(); });
+$('project-preview').addEventListener('timeupdate', () => { if (isProject()) { state.time = $('project-preview').currentTime; $('time-label').textContent = `${timeText(state.time)} / ${timeText(state.plan.durationSec)}`; } });

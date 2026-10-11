@@ -1,72 +1,60 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Video Flow · 想法变成视频</title>
-  <link rel="stylesheet" href="/styles.css">
-</head>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#10161b"><title>Video Flow · 视频工作台</title><link rel="stylesheet" href="/workbench.css"></head>
 <body>
-  <main class="shell">
+<div id="app-shell" class="app-shell" data-mobile-view="chat">
+  <button id="sidebar-backdrop" class="sidebar-backdrop" aria-label="关闭项目列表"></button>
+  <aside id="project-sidebar" class="sidebar" aria-label="项目列表">
+    <a class="brand" href="/"><span class="brand-mark">V</span><span>VIDEO FLOW<small>把想法变成视频</small></span></a>
+    <button id="new-project" class="primary new-project"><span aria-hidden="true">＋</span> 新建项目</button>
+    <div class="sidebar-label"><span>我的项目</span><span id="project-count">0</span></div>
+    <input id="project-search" class="search" placeholder="搜索项目…" aria-label="搜索项目">
+    <div id="project-list" class="project-list"></div>
+    <div id="sidebar-empty" class="sidebar-empty">你的下一个视频，从一个想法开始。</div>
+    <div class="sidebar-footer"><span class="status-dot"></span> 独立工程 · 持续创作<br>每次调整，保留一个新版本。</div>
+  </aside>
+  <main class="main">
     <header class="topbar">
-      <a class="brand" href="/"><span class="brand-mark">V</span><span>video flow</span></a>
-      <div class="top-meta"><span class="mode-pill" id="mode-pill">检查规划器…</span><span class="local-note" id="local-note">检查图片处理方式…</span></div>
+      <div class="project-heading"><button id="menu-button" class="icon-button mobile-menu" aria-label="打开项目列表">☰</button><div><h1 id="project-title">视频工作台</h1><p id="project-subtitle">用对话，让想法逐渐成形</p></div><button id="rename-project" class="quiet" aria-label="重命名项目" hidden>✎</button></div>
+      <div class="top-right"><span id="model-pill" class="model-pill"><i></i><span>连接创作引擎…</span></span><button id="mobile-new-project" class="icon-button mobile-new" aria-label="新建项目">＋</button></div>
     </header>
-
-    <section class="intro">
-      <div class="eyebrow"><span class="sparkle">✳</span> FROM IDEA TO MOTION</div>
-      <h1>把一个想法，<span>变成一段视频。</span></h1>
-      <p>写下你想表达的内容，可以附上图片。AI 会为整条视频创作画面与运动，自行决定造型、构图和镜头；看不懂图片的用途时，它会先问你。</p>
-    </section>
-
-    <div class="history-bar"><label for="history-select">已保存作品</label><select id="history-select"><option value="">打开已生成的作品…</option></select></div>
-    <section class="panel job-panel" aria-label="创作进度"><div class="job-controls"><label for="job-select">创作进度</label><select id="job-select"><option value="">没有进行中的创作</option></select><button id="resume-job" class="secondary-button" disabled>继续创作</button></div><p id="job-status" role="status">每一步自动保存，刷新页面可恢复进度。</p></section>
-    <section class="workspace">
-      <div class="input-panel panel">
-        <div class="panel-heading"><div><span class="step">01</span><h2>描述你的想法</h2></div><span class="optional">图片可选</span></div>
-        <label class="sr-only" for="idea">视频想法</label>
-        <textarea id="idea" maxlength="30000" placeholder="比如：做一段有未来感的短视频，介绍一款帮助人专注的计时器……"></textarea>
-        <div class="input-bottom"><span id="char-count">0 / 30000</span><span>你可以只写想法，细节交给 AI</span></div>
-        <div class="upload-zone" id="upload-zone">
-          <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden>
-          <button class="upload-button" id="upload-button" type="button"><span class="upload-icon">＋</span><span><strong>添加图片</strong><small>PNG、JPG、WebP，每张最大 6 MB</small></span></button>
-          <div id="image-list" class="image-list"></div>
+    <nav class="mobile-tabs" aria-label="工作区"><button id="mobile-chat-tab" aria-selected="true">对话创作</button><button id="mobile-preview-tab" aria-selected="false">视频与版本</button></nav>
+    <div class="workspace">
+      <section class="conversation" aria-label="项目对话">
+        <div class="section-heading"><h2>对话创作</h2><span id="chat-state">从想法到成片</span></div>
+        <div class="conversation-tabs" role="tablist" aria-label="对话和执行历史"><button id="chat-history-tab" role="tab" aria-controls="chat-scroll" aria-selected="true">项目对话</button><button id="pi-history-tab" role="tab" aria-controls="pi-history-panel" aria-selected="false">pi 执行历史<span id="history-tab-count"></span></button></div>
+        <div id="chat-scroll" class="chat-scroll" role="tabpanel" aria-labelledby="chat-history-tab">
+          <div id="chat-empty" class="chat-empty"><div class="empty-logo"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.3" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3Z"/><path d="M7 2v3m10-3v3M7 19v3m10-3v3"/></svg></div><h2>一个想法，一段新故事</h2><p>描述你想做的视频，交给 AI 完成创作。看完成片后，在同一个项目里继续对话、调整和完善。</p><button id="welcome-new-project" class="primary">＋ 新建视频项目</button><span class="empty-fine">独立工程 · 对话记忆 · 完整版本记录</span></div>
+          <div id="message-list" hidden></div>
         </div>
-        <details class="narration-panel"><summary>长视频解说与字幕（可选）</summary><label for="storyboard-input">解说时间轴 JSON</label><input id="storyboard-input" type="file" accept="application/json,.json"><p id="storyboard-info">导入分段时间、解说文案与画面要求，AI 按节奏创作。</p><button id="clear-storyboard" class="secondary-button" type="button">移除时间轴</button><label for="audio-input">配音文件（生成画面后添加）</label><input id="audio-input" type="file" accept="audio/*"><audio id="audio-preview" preload="metadata" hidden></audio><p id="audio-info">可添加 WAV、MP3 或 M4A，导出时与画面同步合成。</p></details>
-        <div id="clarification" class="clarification" hidden>
-          <div class="clarify-label"><span class="question-icon">?</span><span>需要你补充一下</span></div>
-          <p id="question-text"></p>
-          <label class="sr-only" for="clarification-answer">回答</label>
-          <input id="clarification-answer" type="text" placeholder="告诉 AI 这些图片应该怎么用…">
+        <section id="pi-history-panel" class="pi-history-panel" role="tabpanel" aria-labelledby="pi-history-tab" hidden>
+          <div class="history-toolbar"><span id="history-session"></span><div><button id="history-refresh" class="quiet">刷新</button><button id="history-follow" class="quiet" aria-pressed="true">跟随最新 ✓</button><a id="history-download" class="quiet" hidden>下载历史</a></div></div>
+          <div id="history-scroll" class="history-scroll"><button id="history-load-older" class="secondary history-load-older" hidden>加载更早的记录</button><p id="history-empty" class="inspector-empty">选择项目后查看 pi 执行历史。</p><div id="history-list"></div></div>
+          <p id="history-status" class="history-status" role="status"></p>
+        </section>
+        <div class="composer-area">
+          <div id="task-banner" class="task-banner" hidden><div class="task-top"><span id="task-spinner" class="spinner"></span><strong id="task-title"></strong><div class="task-actions"><button id="resume-task" class="quiet" hidden>继续创作</button><button id="cancel-task" class="quiet" hidden>取消</button></div></div><p id="task-detail"></p><div id="task-stages" class="task-stages"><i class="task-stage"></i><i class="task-stage"></i><i class="task-stage"></i><i class="task-stage"></i></div></div>
+          <div id="error-box" class="error-box" role="alert" hidden></div>
+          <form id="composer-form" class="composer"><div id="composer-attachments" class="composer-attachments" hidden></div><label class="sr-only" for="message-input">视频想法或调整要求</label><textarea id="message-input" placeholder="先新建一个项目，开始创作…" maxlength="30000" disabled></textarea><div class="composer-toolbar"><button id="attach-images" class="quiet" type="button" disabled>＋ 添加图片</button><button id="send-message" class="primary" type="submit" disabled><span id="send-label">开始创作</span><span aria-hidden="true">↑</span></button></div></form>
+          <input id="image-input" type="file" accept="image/png,image/jpeg,image/webp" multiple hidden><p id="composer-hint" class="composer-hint">Enter 发送 · Shift + Enter 换行</p>
         </div>
-        <div class="form-actions"><span class="privacy"><span class="lock">⌑</span> AI 模式会将图片发送给规划服务</span><button id="create-button" class="primary-button" type="button"><span>创作视频</span><span class="button-arrow">↗</span></button></div>
-        <div id="error-box" class="error-box" hidden></div>
-      </div>
-
-      <div class="result-column">
-        <div class="panel result-panel">
-          <div class="panel-heading"><div><span class="step">02</span><h2>画面与导演设计</h2></div><span id="plan-state" class="state-label">等待输入</span></div>
-          <div id="empty-state" class="empty-state"><div class="empty-illustration"><span class="empty-orbit orbit-one"></span><span class="empty-orbit orbit-two"></span><span class="empty-core">▶</span></div><strong>想法在这里变成画面</strong><span>提交描述后，AI 会编写这条视频独有的画面与动画</span></div>
-          <div id="plan-content" hidden>
-            <div class="plan-overview"><h3 id="plan-title"></h3><div id="plan-meta" class="plan-meta"></div></div>
-            <p id="plan-direction" class="plan-direction"></p><div id="scene-list" class="scene-list"></div>
-            <div class="validation-box" id="validation-box"><div class="validation-heading"><span class="check-badge">✓</span><strong>画面执行校验</strong><span id="validation-status">等待运行</span></div><div id="validation-items" class="validation-items"></div><button id="validate-button" class="secondary-button" type="button">运行验证</button></div>
-            <div class="refine-box"><label for="refinement">调整这条作品</label><textarea id="refinement" maxlength="1800" placeholder="描述你想调整的画面、动作或节奏…"></textarea><button id="refine-button" class="secondary-button" disabled>按反馈修改</button></div><details class="dsl-details"><summary>查看 AI 编写的完整画面程序</summary><pre id="dsl-output"></pre></details>
-          </div>
-        </div>
-        <div class="panel preview-panel">
-          <div class="panel-heading"><div><span class="step">03</span><h2>预览与导出</h2></div><span id="render-state" class="state-label">等待计划</span></div>
-          <div class="preview-area"><div id="canvas-wrap" class="canvas-wrap"><canvas id="video-canvas" width="720" height="1280"></canvas><div id="canvas-empty" class="canvas-empty"><span>▶</span><small>画面预览</small></div></div></div>
-          <div class="timeline-bar"><input id="timeline" type="range" min="0" max="12" step="0.01" value="0" disabled aria-label="视频时间"><span id="time-label">0.0 秒</span></div><div class="preview-controls"><button id="play-button" class="play-button" disabled><span>▶</span><span>预览动画</span></button><button id="export-button" class="export-button" disabled><span>↓</span><span>导出视频</span></button></div>
-          <div id="export-result" hidden><video id="exported-video" controls playsinline preload="metadata"></video><p id="export-info"></p><a id="download-link" class="secondary-button">下载 MP4</a></div><div class="export-note">MP4 · 30 fps · 短边 720px · 支持逐帧导出</div>
-        </div>
-      </div>
-    </section>
-
-    <details id="run-logs" class="panel run-logs" open><summary>运行日志 <span id="log-status">连接中…</span></summary><div class="log-tools"><span>生成、重试、验证与导出过程</span><a href="/api/logs/download" download>下载日志</a></div><pre id="log-output" aria-label="运行日志内容">等待运行记录…</pre></details>
-
-    <footer><span>VIDEO FLOW MVP</span><span>理解 → 规划 → 校验 → 渲染</span></footer>
+      </section>
+      <section class="preview-column" aria-label="视频预览和项目资料">
+        <div class="preview-title"><h2>视频预览</h2><select id="version-select" class="version-select" aria-label="选择视频版本" disabled><option>暂无版本</option></select></div>
+        <div id="preview-stage" class="stage"><video id="video-preview" controls playsinline preload="metadata" hidden></video><div id="preview-empty" class="preview-empty"><svg viewBox="0 0 110 75" fill="none" stroke="currentColor" aria-hidden="true"><rect x="5" y="6" width="100" height="61" rx="7"/><path d="M5 18h100M5 55h100M20 6v12m18-12v12m18-12v12m18-12v12m18-12v12M20 55v12m18-12v12m18-12v12m18-12v12m18-12v12"/><path d="m48 27 17 10-17 10Z"/></svg><strong id="preview-empty-title">你的故事，即将上演</strong><p id="preview-empty-detail">生成的视频会出现在这里。每次修改都会保存新版本，随时回看创作过程。</p></div></div>
+        <div class="preview-meta"><strong id="video-title">等待第一个作品</strong><span id="video-meta"></span></div>
+        <div id="download-actions" class="download-actions" hidden><a id="download-video" class="primary" download>↓ 下载视频</a><a id="download-source" class="secondary" download>下载工程</a></div>
+        <div id="old-version-note" class="old-version-note" hidden>正在查看历史版本。继续调整时，请回到最新版本。<button id="return-latest">回到最新版本 →</button></div>
+        <div class="inspector-tabs" role="tablist" aria-label="项目资料"><button id="tab-storyboard" role="tab" aria-controls="panel-storyboard" aria-selected="true">分镜</button><button id="tab-assets" role="tab" aria-controls="panel-assets" aria-selected="false">素材</button><button id="tab-acceptance" role="tab" aria-controls="panel-acceptance" aria-selected="false">交付检查</button></div>
+        <section id="panel-storyboard" class="inspector-panel" role="tabpanel" aria-labelledby="tab-storyboard"><p id="plan-direction" class="plan-direction"></p><div id="scene-list" class="scenes"><p class="inspector-empty">创作完成后，可查看分镜并跳转到对应片段。</p></div></section>
+        <section id="panel-assets" class="inspector-panel" role="tabpanel" aria-labelledby="tab-assets" hidden><h3>项目图片</h3><p id="asset-empty" class="inspector-empty">在对话中添加图片，说明你希望如何使用它们。</p><div id="project-assets" class="assets-grid"></div><div class="asset-option"><h3>解说时间轴</h3><button id="import-storyboard" class="secondary" disabled>导入 JSON 时间轴</button><button id="clear-storyboard" class="quiet" hidden>移除</button><p id="storyboard-info">可选。导入已有解说稿和字幕时间轴，与下一条创作消息一起提交。</p></div><div class="asset-option"><h3>配音音频</h3><button id="upload-audio" class="secondary" disabled>上传音频并合成</button><p id="audio-info">生成成片后，可以上传配音音频。</p></div><input id="storyboard-input" type="file" accept=".json,application/json" hidden><input id="audio-input" type="file" accept="audio/*" hidden></section>
+        <section id="panel-acceptance" class="inspector-panel" role="tabpanel" aria-labelledby="tab-acceptance" hidden><div id="acceptance-items" class="acceptance-list"></div><p id="acceptance-note" class="acceptance-note">创作完成后展示工程的实际交付检查结果。</p></section>
+        <details id="run-logs" class="run-logs"><summary>项目运行日志<span id="log-status">连接中…</span></summary><div class="log-tools"><button id="load-older-logs" class="quiet" hidden>加载更早日志</button><a id="download-logs" hidden>下载全部项目日志</a></div><pre id="log-output">选择项目后显示运行日志。</pre></details>
+      </section>
+    </div>
   </main>
-  <script type="module" src="/app.js"></script>
-</body>
-</html>
+</div>
+<dialog id="new-project-dialog" class="dialog"><form id="new-project-form"><h2>新建视频项目</h2><p>每个项目拥有自己的创作工程、对话和版本。先起一个名字，也可以让 AI 根据内容命名。</p><label for="new-project-name">项目名称（可选）</label><input id="new-project-name" maxlength="80" placeholder="例如：一场穿越宇宙的旅行" autocomplete="off"><div id="new-project-error" class="dialog-error" role="alert" hidden></div><div class="dialog-actions"><button id="cancel-new-project" class="quiet" type="button">取消</button><button id="confirm-new-project" class="primary" type="submit">创建项目 →</button></div></form></dialog>
+<dialog id="rename-dialog" class="dialog"><form id="rename-form"><h2>项目名称</h2><label for="rename-name">名称</label><input id="rename-name" maxlength="80" required><div id="rename-error" class="dialog-error" role="alert" hidden></div><div class="dialog-actions"><button id="cancel-rename" class="quiet" type="button">取消</button><button id="confirm-rename" class="primary" type="submit">保存</button></div></form></dialog>
+<script type="module" src="/workbench.js"></script>
+</body></html>

@@ -13,8 +13,14 @@ import { createLogger } from './run-logger.mjs';
 import { createJobStore } from './generation-jobs.mjs';
 import { hash } from './module-contract.mjs';
 import { normalizeStoryboard } from './narration-contract.js';
+import { executeVideoGoal, projectDirectory, projectWorkspaceDirectory } from './video-projects.mjs';
+import { locatePi } from './agent-sandbox.mjs';
+import { createWorkspaceStore } from './workspace-projects.mjs';
+import {readProjectHistory, exportProjectHistory} from './project-history.mjs';
+import {assertNodeRuntime} from './node-runtime.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
+assertNodeRuntime();
 try { process.loadEnvFile(join(root, '.env')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
 const logger = await createLogger(root);
 const port = Number(process.env.PORT || 4173), execFile = promisify(execFileCb);
@@ -54,15 +60,25 @@ async function narrationFor(record) {
   const meta = await readFile(join(saved, record.id + '.audio.json'), 'utf8').then(JSON.parse).catch(e => { if (e.code !== 'ENOENT') throw e; return null; });
   return meta && meta.timelineHash === hash(record.plan.storyboard || { durationSec: record.plan.durationSec }) ? meta : null;
 }
-async function readJson(req) { return JSON.parse((await readBuffer(req, 12_000_000)).toString() || '{}'); }
+async function readJson(req, limit = 12_000_000) { return JSON.parse((await readBuffer(req, limit)).toString() || '{}'); }
 async function readRecord(id) { if (!validId(id)) throw new Error('作品编号无效。'); return JSON.parse(await readFile(join(saved, id + '.json'), 'utf8')); }
+const workspaces = await createWorkspaceStore({directory: join(root, 'artifacts/workspaces'), readRecord, logger});
 const jobs = await createJobStore({
   directory: join(root, 'artifacts', 'jobs'), logger,
+  onSettled: job => workspaces.settle(job),
   async execute(input, log, persistence, job) {
+    if (input.projectId) {
+      const latestJobId = [...workspaces.get(input.projectId).messages].reverse().find(m => m.jobId)?.jobId;
+      if (latestJobId !== job.id) throw new Error('项目已有新的对话任务，请继续最新一轮创作。');
+    }
+    const current = await readRecord(job.generationId).catch(e => { if (e.code !== 'ENOENT') throw e; return null; });
+    if (current?.jobId === job.id) return { mode: current.mode, plan: current.plan, usage: current.usage };
     if (input.repair) {
-      const current = await readRecord(job.generationId);
-      if (current.jobId === job.id) return { mode: current.mode, plan: current.plan, usage: current.usage };
-      if (hash(current.plan) !== input.basePlanHash) throw new Error('作品已有新版本，这个旧任务不能覆盖它。请在最新作品上重新提交反馈。');
+      if (!current || hash(current.plan) !== input.basePlanHash) throw new Error('作品已有新版本，这个旧任务不能覆盖它。请在最新作品上重新提交反馈。');
+    }
+    if (input.engine === 'pi') {
+      if (!ffmpegPath || !ffprobePath) throw new Error('pi 视频创作需要安装 FFmpeg / FFprobe 后重启服务。');
+      return executeVideoGoal(input, providerConfig(), log, persistence, job, root, ffprobePath);
     }
     return makePlan(input, providerConfig(), log, persistence);
   },
@@ -70,26 +86,44 @@ const jobs = await createJobStore({
     const input = job.input, id = job.generationId;
     if (result.plan.status === 'plan') {
       const previous = await readRecord(id).catch(e => { if (e.code !== 'ENOENT') throw e; return null; });
+      const record = previous?.jobId === job.id ? previous : { id, jobId: job.id, createdAt: new Date().toISOString(), prompt: input.prompt, images: input.images || [], clarificationAnswer: input.clarificationAnswer || '', ...result };
+      const projectVideo = result.plan.renderer === 'remotion-project' ? join(saved, `${id}.${job.id}.mp4.tmp`) : null;
+      // Prepare the new movie before publishing the record or removing an old movie.
+      if (projectVideo) {
+        const project = projectDirectory(root, id, result.plan.projectRevision), audio = await narrationFor(record);
+        try {
+          if (audio) await execFile(ffmpegPath, ['-v','error','-y','-i',join(project, 'output/video.mp4'),'-i',join(saved,id+'.audio.m4a'),'-map','0:v:0','-map','1:a:0','-c','copy','-t',String(record.plan.durationSec),'-movflags','+faststart','-f','mp4',projectVideo], {timeout: 120000});
+          else await copyFile(join(project, 'output/video.mp4'), projectVideo);
+        } catch (e) { await rm(projectVideo, {force: true}); throw e; }
+      }
       // A crash after the record commit can be resumed without a duplicate revision.
       if (previous?.jobId !== job.id) {
-        const record = { id, jobId: job.id, createdAt: new Date().toISOString(), prompt: input.prompt, images: input.images || [], clarificationAnswer: input.clarificationAnswer || '', ...result };
         if (input.repair) {
           if (!previous || hash(previous.plan) !== input.basePlanHash) throw new Error('作品版本已变化，不能提交旧任务。');
           record.revisions = [...(previous.revisions || []), { at: record.createdAt, diagnostics: String(input.repair.diagnostics).slice(0, 5000), plan: previous.plan }];
           await mkdir(revisions, { recursive: true });
-          const video = await readFile(join(saved, id + '.mp4')).catch(e => { if (e.code !== 'ENOENT') throw e; });
-          if (video) await writeFile(join(revisions, `${id}-v${record.revisions.length}.mp4`), video);
+          await copyFile(join(saved, id + '.mp4'), join(revisions, `${id}-v${record.revisions.length}.mp4`)).catch(e => { if (e.code !== 'ENOENT') throw e; });
         }
         const temporary = join(saved, `${id}.${randomBytes(4).toString('hex')}.tmp`);
         await writeFile(temporary, JSON.stringify(record, null, 2)); await rename(temporary, join(saved, id + '.json'));
       }
-      if (input.repair) await rm(join(saved, id + '.mp4'), { force: true });
+      if (projectVideo) await rename(projectVideo, join(saved, id + '.mp4'));
+      else if (input.repair) await rm(join(saved, id + '.mp4'), { force: true });
       result.generationId = id;
+      result.version = (record.revisions?.length || 0) + 1;
     }
     log('plan.complete', result.plan.status === 'clarification' ? '需要确认图片用途' : '完整作品已保存', { status: result.plan.status, modules: result.plan.modules?.length || 0, codeChars: result.plan.renderCode?.length });
     return result;
   }
 });
+await workspaces.reconcile(jobs);
+async function workspaceView(id) {
+  const project = workspaces.get(id), record = await readRecord(id).catch(e => { if (e.code !== 'ENOENT') throw e; return null; });
+  const lastJobId = [...project.messages].reverse().find(m => m.jobId)?.jobId;
+  const task = lastJobId ? jobs.get(lastJobId) : null;
+  const versions = record ? [...(record.revisions || []).map((r,i) => ({version: i + 1, title: r.plan.title, durationSec: r.plan.durationSec, aspectRatio: r.plan.aspectRatio, createdAt: r.at})), {version: (record.revisions?.length || 0) + 1, title: record.plan.title, durationSec: record.plan.durationSec, aspectRatio: record.plan.aspectRatio, createdAt: record.createdAt}] : [];
+  return {...project, piSessionId: task?.piSessionId || project.piSessionId, images: project.images.map((image,index) => ({name: image.name, index, url: `/api/projects/${id}/assets/${index}`})), job: task, versions, latestVersion: versions.length, video: record ? {plan: record.plan, audioAvailable: Boolean(await narrationFor(record))} : null};
+}
 const server = http.createServer(async (req, res) => {
   let directory, context;
   const started = Date.now();
@@ -98,12 +132,73 @@ const server = http.createServer(async (req, res) => {
   const log = (event, message, fields = {}, level = 'info') => logger.log(event, message, { requestId, runId, ...context, ...fields }, level);
   try {
     const path = new URL(req.url, 'http://localhost').pathname;
+    if (path === '/api/projects') {
+      if (req.method === 'POST') return json(res, 201, await workspaces.create(await readJson(req)));
+      if (req.method === 'GET') { await workspaces.reconcile(jobs); return json(res, 200, workspaces.list().map(p => { const task = p.lastJobId ? jobs.get(p.lastJobId) : null; return {...p, status: task?.status || 'draft'}; })); }
+    }
+    const workspacePath = path.match(/^\/api\/projects\/([a-f0-9]{16})(\/(?:messages|rename))?$/);
+    if (workspacePath) {
+      const id = workspacePath[1];
+      context = {generationId: id, projectId: id};
+      if (req.method === 'GET' && !workspacePath[2]) { await workspaces.reconcile(jobs, id); return json(res, 200, await workspaceView(id)); }
+      if (req.method === 'POST' && workspacePath[2] === '/rename') { await workspaces.rename(id, (await readJson(req)).title); return json(res, 200, await workspaceView(id)); }
+      if (req.method === 'POST' && workspacePath[2] === '/messages') {
+        await workspaces.reconcile(jobs, id);
+        const body = await readJson(req, 60_000_000);
+        if (body.storyboard) body.storyboard = normalizeStoryboard(body.storyboard);
+        return json(res, 202, await workspaces.submit(id, body, jobs, runId));
+      }
+    }
+    const historyPath = path.match(/^\/api\/projects\/([a-f0-9]{16})\/history$/);
+    if (req.method === 'GET' && historyPath) {
+      const id = historyPath[1], query = new URL(req.url, 'http://localhost').searchParams;
+      workspaces.get(id);
+      const directory = projectWorkspaceDirectory(root, id);
+      if (query.get('download') === '1') {
+        await access(join(directory, 'control/session.jsonl'));
+        res.writeHead(200, {'content-type': 'application/x-ndjson; charset=utf-8', 'content-disposition': `attachment; filename="pi-history-${id}.jsonl"`, 'cache-control': 'no-store'});
+        for await (const line of exportProjectHistory(directory)) {
+          if (res.destroyed) break;
+          if (!res.write(line)) await new Promise(resolve => {
+            const done = () => { res.off('drain', done); res.off('close', done); resolve(); };
+            res.once('drain', done); res.once('close', done);
+          });
+        }
+        return res.end();
+      }
+      return json(res, 200, await readProjectHistory(directory, {
+        before: query.has('before') ? Number(query.get('before')) : undefined,
+        after: query.has('after') ? Number(query.get('after')) : undefined,
+        limit: query.has('limit') ? Number(query.get('limit')) : 60
+      }));
+    }
+    const assetPath = path.match(/^\/api\/projects\/([a-f0-9]{16})\/assets\/(\d+)$/);
+    if (req.method === 'GET' && assetPath) {
+      const image = workspaces.get(assetPath[1]).images[Number(assetPath[2])];
+      if (!image) { res.writeHead(404); return res.end(); }
+      const match = image.dataUrl.match(/^data:(image\/(?:png|jpeg|webp));base64,(.+)$/s), bytes = Buffer.from(match[2], 'base64');
+      res.writeHead(200, {'content-type': match[1], 'content-length': bytes.length, 'cache-control': 'private, max-age=3600'}); return res.end(bytes);
+    }
+    const versionPath = path.match(/^\/api\/projects\/([a-f0-9]{16})\/versions\/([1-9]\d*)(\/(?:video|source))?$/);
+    if (req.method === 'GET' && versionPath) {
+      workspaces.get(versionPath[1]);
+      const record = await readRecord(versionPath[1]), number = Number(versionPath[2]), current = (record.revisions?.length || 0) + 1;
+      if (number > current) throw new Error('视频版本不存在。');
+      const plan = number === current ? record.plan : record.revisions[number - 1].plan;
+      if (!versionPath[3]) return json(res, 200, {version: number, latestVersion: current, plan});
+      const directory = projectDirectory(root, record.id, plan.projectRevision);
+      let file = versionPath[3] === '/source' ? join(directory, 'output/project.tar') : number === current ? join(saved, record.id + '.mp4') : join(revisions, `${record.id}-v${number}.mp4`);
+      if (versionPath[3] === '/video' && !await access(file).then(() => true, () => false)) file = join(directory, 'output/video.mp4');
+      if (versionPath[3] === '/source') res.setHeader('content-disposition', `attachment; filename="video-${record.id}-v${number}.tar"`);
+      return sendFile(req, res, file, (await stat(file)).size, versionPath[3] === '/source' ? 'application/x-tar' : 'video/mp4');
+    }
     if (req.method === 'GET' && path === '/api/jobs') return json(res, 200, jobs.list());
-    const jobPath = path.match(/^\/api\/jobs\/([a-f0-9]{16})(\/(?:resume|input))?$/);
+    const jobPath = path.match(/^\/api\/jobs\/([a-f0-9]{16})(\/(?:resume|input|cancel))?$/);
     if (jobPath) {
       if (req.method === 'GET' && jobPath[2] === '/input') return json(res, 200, jobs.input(jobPath[1]));
       if (req.method === 'GET' && !jobPath[2]) return json(res, 200, jobs.get(jobPath[1]));
       if (req.method === 'POST' && jobPath[2] === '/resume') return json(res, 202, await jobs.resume(jobPath[1]));
+      if (req.method === 'POST' && jobPath[2] === '/cancel') return json(res, 200, await jobs.cancel(jobPath[1]));
     }
     if (req.method === 'GET' && path === '/api/logs/stream') {
       res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-cache, no-transform', 'connection': 'keep-alive', 'x-accel-buffering': 'no' });
@@ -112,9 +207,16 @@ const server = http.createServer(async (req, res) => {
       const unsubscribe = logger.subscribe(send), heartbeat = setInterval(() => { if (!res.destroyed) res.write(': heartbeat\n\n'); }, 15000);
       req.on('close', () => { clearInterval(heartbeat); unsubscribe(); }); return;
     }
-    if (req.method === 'GET' && path === '/api/logs') return json(res, 200, logger.snapshot());
+    if (req.method === 'GET' && path === '/api/logs') {
+      const query = new URL(req.url, 'http://localhost').searchParams, projectId = query.get('projectId');
+      if (!projectId) return json(res, 200, logger.snapshot());
+      workspaces.get(projectId);
+      return json(res, 200, await logger.history({projectId, before: query.get('before') || undefined, limit: query.has('limit') ? Number(query.get('limit')) : 100}));
+    }
     if (req.method === 'GET' && path === '/api/logs/download') {
-      const bytes = await logger.download(); res.writeHead(200, { 'content-type': 'application/x-ndjson', 'content-length': bytes.length, 'content-disposition': 'attachment; filename="video-flow-logs.jsonl"' }); return res.end(bytes);
+      const projectId = new URL(req.url, 'http://localhost').searchParams.get('projectId');
+      if (projectId) workspaces.get(projectId);
+      const bytes = await logger.download(projectId); res.writeHead(200, { 'content-type': 'application/x-ndjson', 'content-length': bytes.length, 'content-disposition': 'attachment; filename="video-flow-logs.jsonl"' }); return res.end(bytes);
     }
     if (req.method === 'POST' && path === '/api/events') {
       const entry = JSON.parse((await readBuffer(req, 12000)).toString());
@@ -129,12 +231,13 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true });
     }
     if (req.method === 'GET' && path === '/api/health') {
-      const c = providerConfig(); return json(res, 200, { mode: c.apiKey ? 'ai' : 'demo', provider: c.host, model: c.model, apiStyle: c.apiStyle, ffmpeg: Boolean(ffmpegPath && ffprobePath), renderer: 'canvas-program', workflow: 'multi-turn-modules' });
+      const c = providerConfig(), pi = await locatePi().then(() => true, () => false); return json(res, 200, { mode: c.apiKey ? 'ai' : 'demo', provider: c.host, model: c.model, apiStyle: c.apiStyle, ffmpeg: Boolean(ffmpegPath && ffprobePath), pi, sandbox: process.platform === 'darwin', defaultEngine: process.env.VIDEO_ENGINE || 'pi', renderer: 'remotion-project', workflow: 'pi-goal' });
     }
     if (req.method === 'POST' && path === '/api/plan') {
       const body = await readJson(req);
       if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('创作请求格式无效。');
-      const input = { prompt: body.prompt, images: body.images || [], clarificationAnswer: body.clarificationAnswer || '', async: body.async === true, generationId: body.generationId, storyboard: body.storyboard ? normalizeStoryboard(body.storyboard) : undefined };
+      const input = { engine: body.engine || process.env.VIDEO_ENGINE || 'pi', prompt: body.prompt, images: body.images || [], clarificationAnswer: body.clarificationAnswer || '', async: body.async === true, generationId: body.generationId, storyboard: body.storyboard ? normalizeStoryboard(body.storyboard) : undefined };
+      if (!['pi', 'canvas'].includes(input.engine)) throw new Error('创作方式无效。');
       if (body.repair) input.repair = { diagnostics: body.repair.diagnostics, moduleId: typeof body.repair.moduleId === 'string' ? body.repair.moduleId : undefined };
       if (typeof input.prompt !== 'string' || !input.prompt.trim() || input.prompt.length > 30000) throw new Error('请填写 1–30000 字的视频想法。');
       if (input.images !== undefined && (!Array.isArray(input.images) || input.images.length > 6 || input.images.some(i => typeof i?.dataUrl !== 'string' || !/^data:image\/(png|jpeg|webp);base64,/.test(i.dataUrl)))) throw new Error('图片附件格式无效。');
@@ -145,6 +248,7 @@ const server = http.createServer(async (req, res) => {
       log('plan.start', input.repair ? '开始修改或修复作品' : '开始 AI 创作', { promptChars: input.prompt.length, images: (input.images || []).length });
       if (input.repair) {
         const previous = await readRecord(generationId);
+        if (!body.engine) input.engine = previous.plan.renderer === 'remotion-project' ? 'pi' : 'canvas';
         input.repair.plan = previous.plan; input.storyboard = previous.plan.storyboard; input.basePlanHash = hash(previous.plan);
       }
       const task = await jobs.create(input, generationId, runId);
@@ -177,6 +281,26 @@ const server = http.createServer(async (req, res) => {
         await writeFile(join(saved, record.id + '.audio.json'), JSON.stringify({ durationSec, timelineHash }));
         await rm(join(saved, record.id + '.mp4'), { force: true });
         log('audio.complete','配音已保存，导出时将同步合成',{generationId:record.id,durationSec}); return json(res,200,{durationSec});
+      }
+    }
+    const projectRoute = path.match(/^\/api\/generations\/([a-f0-9]{16})\/(project|acceptance|export)$/);
+    if (projectRoute) {
+      const record = await readRecord(projectRoute[1]);
+      if (record.plan.renderer !== 'remotion-project') throw new Error('这条作品使用原画布渲染方式。');
+      const directory = projectDirectory(root, record.id, record.plan.projectRevision);
+      if (req.method === 'GET' && projectRoute[2] === 'acceptance') return json(res,200,record.plan.acceptance);
+      if (req.method === 'GET' && projectRoute[2] === 'project') { const file = join(directory,'output/project.tar'); res.setHeader('content-disposition',`attachment; filename="video-${record.id}.tar"`); return sendFile(req,res,file,(await stat(file)).size,'application/x-tar'); }
+      if (req.method === 'POST' && projectRoute[2] === 'export') {
+        if (jobs.isRunning(record.id)) throw new Error('请等待当前创作完成。');
+        const audio = await narrationFor(record), output = join(saved,`${record.id}.${randomBytes(4).toString('hex')}.mp4.tmp`);
+        try {
+          if (audio) await execFile(ffmpegPath,['-v','error','-y','-i',join(directory,'output/video.mp4'),'-i',join(saved,record.id+'.audio.m4a'),'-map','0:v:0','-map','1:a:0','-c','copy','-t',String(record.plan.durationSec),'-movflags','+faststart','-f','mp4',output],{timeout:120000});
+          else await copyFile(join(directory,'output/video.mp4'),output);
+          if (jobs.isRunning(record.id) || (await readRecord(record.id)).plan.sourceHash !== record.plan.sourceHash) throw new Error('封装期间作品版本发生变化。');
+          await rename(output,join(saved,record.id+'.mp4'));
+        } finally { await rm(output,{force:true}); }
+        const size = dimensions(record.plan.aspectRatio,record.plan.durationSec>120?1080:720);
+        return json(res,200,{url:`/api/generations/${record.id}/video`,...size,durationSec:record.plan.durationSec,frames:Math.round(record.plan.durationSec*30),audio:Boolean(audio)});
       }
     }
     const history = path.match(/^\/api\/generations\/([a-f0-9]{16})(\/video)?$/);
@@ -232,11 +356,15 @@ const server = http.createServer(async (req, res) => {
       return sendFile(req, res, join(saved, id + '.mp4'), size);
     }
     const file = path === '/' ? '/index.html' : path;
-    if (req.method !== 'GET' || !['/index.html', '/app.js', '/live-log.js', '/styles.css', '/program-renderer.js', '/video-contract.js', '/narration-contract.js', '/sandbox-frame.html'].includes(file)) { res.writeHead(404); return res.end('Not found'); }
+    if (req.method !== 'GET' || !['/index.html', '/workbench.js', '/workbench.css', '/app.js', '/live-log.js', '/pi-history.js', '/styles.css', '/program-renderer.js', '/video-contract.js', '/narration-contract.js', '/sandbox-frame.html'].includes(file)) { res.writeHead(404); return res.end('Not found'); }
     const body = await readFile(join(root, file.slice(1))); res.writeHead(200, { 'content-type': mime[extname(file)], 'cache-control': 'no-store' }); res.end(body);
   } catch (error) {
+    if (res.headersSent) { res.destroy(); return; }
     if (req.method === 'POST') log('request.failed', error.message || '请求失败', { reason: error.message, stack: error.stack, elapsedMs: Date.now() - started }, 'error');
     json(res, error.code === 'ENOENT' ? 404 : 400, { error: error.message || '操作失败。' });
   } finally { if (directory) await rm(directory, { recursive: true, force: true }).catch(() => {}); }
 });
-server.listen(port, '127.0.0.1', () => logger.log('server.ready', `服务已启动：http://127.0.0.1:${port}`, { logFile: logger.file(), provider: providerConfig().host, model: providerConfig().model, ffmpeg: Boolean(ffmpegPath && ffprobePath) }));
+server.listen(port, '127.0.0.1', () => {
+  logger.log('server.ready', `服务已启动：http://127.0.0.1:${port}`, {logFile: logger.file(), provider: providerConfig().host, model: providerConfig().model, ffmpeg: Boolean(ffmpegPath && ffprobePath)});
+  jobs.resumePending().catch(e => logger.log('goal.resume-failed','后台任务恢复失败',{reason:e.message},'error'));
+});
